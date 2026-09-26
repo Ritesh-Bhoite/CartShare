@@ -21,15 +21,21 @@ CartShare is a browser-based shared shopping list for roommates, students, frien
 - CSS3
 - JavaScript
 - Bootstrap 5 CDN
-- `localStorage` for room data shared by tabs
-- `sessionStorage` for the current tab's user identity
+- Supabase JavaScript client v2
+- Supabase Postgres and Realtime for shared room data
+- `sessionStorage` for the current tab's identity and active-room convenience state
+- `localStorage` only for the last selected room convenience value
 
 ## How to Run
 
 1. Open the project folder in VS Code.
 2. Install the Live Server extension if it is not already installed.
-3. Right-click `index.html` and select **Open with Live Server**.
-4. Use **Create a Room** or **Join a Room** on the landing page.
+3. Open `js/supabase-config.js` and replace `PASTE_YOUR_SUPABASE_PUBLISHABLE_KEY_HERE` with the Supabase **publishable** key for the configured project. Never paste a secret or `service_role` key into browser code.
+4. Confirm the six tables are in the `supabase_realtime` publication. The current project reports Realtime enabled for all six tables.
+5. Right-click `index.html` and select **Open with Live Server**, or deploy the static project root to Vercel.
+6. Use **Create a Room** or **Join a Room** on the landing page.
+
+The pages load Supabase JS v2 from jsDelivr, then `js/supabase-config.js`, then `js/script.js`. The app uses the existing columns in `rooms`, `participants`, `cart_items`, `activities`, `orders`, and `order_items`. Shared records are queried by room code; the current user's name remains in `sessionStorage`.
 
 ## Folder Structure
 
@@ -44,17 +50,22 @@ CartShare/
 ├── css/
 │   └── style.css
 ├── js/
-│   └── script.js
+│   ├── script.js
+│   └── supabase-config.js
 └── assets/
 	└── images/
 ```
 
 ## Collaboration
 
-Cart data, activity, participant records, and orders are stored in `localStorage` under keys scoped to the room code, such as `cartShareCart_CART1234` and `cartShareOrders_CART1234`. Placing an order saves an item snapshot and delivery details without clearing the shared cart. The current room is written to `localStorage`; a per-tab `sessionStorage` room pin keeps another tab's room selection from changing the current tab's view. The application listens for the browser `storage` event and refreshes the relevant views when another tab changes those keys. The signed-in name is stored in `sessionStorage`, so different tabs can use different names without overwriting one another.
+Cart items, activities, participants, rooms, orders, and order lines are stored in the Supabase tables. Room-scoped queries and Realtime subscriptions keep each normal app view on its active room; cart deletion events refresh the current room's cart. Order-line change events are not subscribed to globally because `order_items` has no `room_code` column. The room-filtered `orders` Realtime event refreshes a newly placed order after its lines are saved. Orders preserve a snapshot of the cart without clearing it. The browser storage `storage` event is not used for synchronization. The signed-in name is stored in `sessionStorage` and is never written to shared room rows as the identity source.
 
 To test two users, open the Live Server page in two tabs. Create a room in the first tab and note its code. In the second tab, choose **Join Room**, enter a different name and that code, then open the cart in both tabs. Adding or removing an item in either tab should update the other tab automatically.
 
 ## Limitations
 
-CartShare is a frontend-only browser collaboration prototype. Orders are simulated records only; no payment is collected or processed. It has no backend, database, authentication, or server-side presence tracking. `localStorage` collaboration works between tabs using the same browser profile and site origin; it does not synchronize across different devices or separate browser profiles. Participant records indicate sessions that joined a room and do not guarantee that those sessions are currently active. Room codes are identifiers, not security credentials.
+CartShare remains a static HTML/CSS/JavaScript frontend, but Supabase is its hosted database and Realtime service. Orders are simulated records only; no payment is collected or processed. Participant rows indicate sessions that joined a room and do not guarantee those sessions are currently active.
+
+**Security status:** the supplied project status showed RLS disabled on all six tables. With RLS disabled, room-code filters in this UI are not database security boundaries; anyone with the project URL and publishable key may be able to read or modify data permitted by the API grants. Publishable keys are expected in browser apps, but they do not make public table access safe. Do not use this configuration for private or sensitive data. Before production use, choose and implement an authorization/RLS design for room membership. No RLS policies were changed by this client integration.
+
+Vercel can host this project as static files. Cross-device operations require network access to Supabase and the Supabase JS CDN; they do not require a custom application server.

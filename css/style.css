@@ -1007,6 +1007,21 @@ input:focus-visible {
     color: var(--coral);
 }
 
+.app-error {
+    width: min(100% - 36px, 1180px);
+    margin: 18px auto 0;
+    padding: 12px 15px;
+    border: 1px solid #e3b4a9;
+    border-radius: 4px;
+    color: #7a3023;
+    background: #fff1ed;
+    font-size: 14px;
+}
+
+.app-error[hidden] {
+    display: none;
+}
+
 @keyframes panel-arrive {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
