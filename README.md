@@ -1,41 +1,30 @@
 # CartShare
 
-CartShare is a browser-based shared shopping list for roommates, students, friends, and other groups. Create a room or join one with its code, then track items, activity, participants, and a printable receipt together.
+CartShare is a browser-based shared shopping cart for groups. Create or join a room, manage items together, see room activity and participants, and print a receipt.
 
 ## Features
 
-- Create a room or join an existing room code
-- Shared, room-specific shopping cart with add and remove actions
-- Checkout with customer, contact, and delivery details
-- Room-scoped order placement simulation and confirmation page
-- Automatic cart, activity, and participant updates between browser tabs
-- Dynamic participant names stored per browser tab
-- Room activity history with the latest 30 entries
-- Receipt generation and print-only receipt layout
-- Responsive landing, room dashboard, and cart pages
-- Indian Rupee pricing and cart totals
+- Create a room with a unique room code or join an existing room
+- Add and remove cart items with quantity, price, and dynamic add-by attribution
+- Room-specific cart totals and persistent browser storage
+- Participant list and room activity log
+- Same-origin tab/window updates using the browser `storage` event
+- Checkout simulation, order confirmation, and printable receipt
+- Responsive desktop and mobile layout
 
 ## Technologies
 
-- HTML5
-- CSS3
-- JavaScript
+- HTML5, CSS3, and JavaScript
 - Bootstrap 5 CDN
-- Supabase JavaScript client v2
-- Supabase Postgres and Realtime for shared room data
-- `sessionStorage` for the current tab's identity and active-room convenience state
-- `localStorage` only for the last selected room convenience value
+- `localStorage` for room, participant, cart, activity, and order data
+- `sessionStorage` for the current tab's user name and participant identity
 
 ## How to Run
 
 1. Open the project folder in VS Code.
-2. Install the Live Server extension if it is not already installed.
-3. Open `js/supabase-config.js` and replace `PASTE_YOUR_SUPABASE_PUBLISHABLE_KEY_HERE` with the Supabase **publishable** key for the configured project. Never paste a secret or `service_role` key into browser code.
-4. Confirm the six tables are in the `supabase_realtime` publication. The current project reports Realtime enabled for all six tables.
-5. Right-click `index.html` and select **Open with Live Server**, or deploy the static project root to Vercel.
-6. Use **Create a Room** or **Join a Room** on the landing page.
-
-The pages load Supabase JS v2 from jsDelivr, then `js/supabase-config.js`, then `js/script.js`. The app uses the existing columns in `rooms`, `participants`, `cart_items`, `activities`, `orders`, and `order_items`. Shared records are queried by room code; the current user's name remains in `sessionStorage`.
+2. Install the Live Server extension if needed.
+3. Right-click `index.html` and select **Open with Live Server**. The static project can also be hosted on Vercel.
+4. Create a room in one tab, then join it from another tab in the same browser profile using the displayed room code.
 
 ## Folder Structure
 
@@ -50,22 +39,13 @@ CartShare/
 ├── css/
 │   └── style.css
 ├── js/
-│   ├── script.js
-│   └── supabase-config.js
+│   └── script.js
 └── assets/
-	└── images/
+    └── images/
 ```
 
-## Collaboration
+## Storage and Collaboration
 
-Cart items, activities, participants, rooms, orders, and order lines are stored in the Supabase tables. Room-scoped queries and Realtime subscriptions keep each normal app view on its active room; cart deletion events refresh the current room's cart. Order-line change events are not subscribed to globally because `order_items` has no `room_code` column. The room-filtered `orders` Realtime event refreshes a newly placed order after its lines are saved. Orders preserve a snapshot of the cart without clearing it. The browser storage `storage` event is not used for synchronization. The signed-in name is stored in `sessionStorage` and is never written to shared room rows as the identity source.
+Room data is stored under room-specific `localStorage` keys so different rooms remain isolated. A tab stores its current user name and participant-session ID in `sessionStorage`. Other tabs on the same browser profile and site origin receive `storage` events and reload the changed room data. The browser does not fire a `storage` event in the tab that performed the write, so that tab updates its view directly after each operation.
 
-To test two users, open the Live Server page in two tabs. Create a room in the first tab and note its code. In the second tab, choose **Join Room**, enter a different name and that code, then open the cart in both tabs. Adding or removing an item in either tab should update the other tab automatically.
-
-## Limitations
-
-CartShare remains a static HTML/CSS/JavaScript frontend, but Supabase is its hosted database and Realtime service. Orders are simulated records only; no payment is collected or processed. Participant rows indicate sessions that joined a room and do not guarantee those sessions are currently active.
-
-**Security status:** the supplied project status showed RLS disabled on all six tables. With RLS disabled, room-code filters in this UI are not database security boundaries; anyone with the project URL and publishable key may be able to read or modify data permitted by the API grants. Publishable keys are expected in browser apps, but they do not make public table access safe. Do not use this configuration for private or sensitive data. Before production use, choose and implement an authorization/RLS design for room membership. No RLS policies were changed by this client integration.
-
-Vercel can host this project as static files. Cross-device operations require network access to Supabase and the Supabase JS CDN; they do not require a custom application server.
+This browser-only assignment does not synchronize separate devices, browser profiles, or storage origins. It does not use Supabase, Firebase, a backend, or an external database. Orders are a local simulation only; no payment is processed.

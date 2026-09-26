@@ -3,28 +3,46 @@
     const ROOM_KEY = "cartShareRoom";
     const ACTIVE_ROOM_KEY = "cartShareActiveRoom";
     const LAST_ORDER_KEY = "cartShareLastOrder";
-    const state = { cart: [], activities: [], participants: [], channel: null };
+    const state = { cart: [], activities: [], participants: [], orders: [] };
 
-    function client() {
-        return window.cartShareSupabase || null;
+    function currentUser() {
+        return sessionStorage.getItem(USER_KEY) || "";
     }
 
     function roomCode() {
-        return sessionStorage.getItem(ACTIVE_ROOM_KEY) || localStorage.getItem(ROOM_KEY);
+        return sessionStorage.getItem(ACTIVE_ROOM_KEY) || localStorage.getItem(ROOM_KEY) || "";
     }
 
-    function currentUser() {
-        return sessionStorage.getItem(USER_KEY);
+    function roomKey(type, code = roomCode()) {
+        return code ? `cartShare${type}_${code}` : "";
     }
 
-    function participantId(code = roomCode()) {
-        const key = `cartShareParticipantId_${code}`;
-        let id = sessionStorage.getItem(key);
-        if (!id) {
-            id = window.crypto?.randomUUID?.() || `participant-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-            sessionStorage.setItem(key, id);
+    function readRoomList(type, code = roomCode()) {
+        const key = roomKey(type, code);
+        if (!key) return [];
+        try {
+            const value = localStorage.getItem(key);
+            const parsed = value ? JSON.parse(value) : [];
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+            reportError(`Could not read room data (${type}).`, error);
+            return [];
         }
-        return id;
+    }
+
+    function writeRoomList(type, entries, code = roomCode()) {
+        const key = roomKey(type, code);
+        if (!key) throw new Error("A room code is required to save room data.");
+        try {
+            localStorage.setItem(key, JSON.stringify(entries));
+        } catch (error) {
+            reportError(`Could not save room data (${type}).`, error);
+            throw error;
+        }
+    }
+
+    function createId(prefix = "cs") {
+        return window.crypto?.randomUUID?.() || `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     }
 
     function setText(id, value) {
@@ -32,7 +50,7 @@
         if (element) element.textContent = value ?? "";
     }
 
-    function reportError(error, heading = "Supabase request failed") {
+    function reportError(message, error = null) {
         let banner = document.getElementById("appError");
         if (!banner) {
             banner = document.createElement("div");
@@ -41,9 +59,8 @@
             banner.setAttribute("role", "alert");
             (document.querySelector("main") || document.body).prepend(banner);
         }
-        const message = typeof error === "string" ? error : error?.message || "Check the Supabase connection and table permissions.";
-        console.error(`[CartShare] ${heading}: ${message}`, error);
-        banner.textContent = `${heading}: ${message}`;
+        console.error(`[CartShare] ${message}`, error || "");
+        banner.textContent = error?.message ? `${message} ${error.message}` : message;
         banner.hidden = false;
     }
 
@@ -55,45 +72,18 @@
         }
     }
 
-    function getClient() {
-        const supabaseClient = client();
-        if (!supabaseClient) {
-            reportError(
-                window.cartShareSupabaseInitError || "Add the Supabase publishable key to js/supabase-config.js and reload.",
-                "Supabase setup required"
-            );
-        }
-        return supabaseClient;
-    }
-
     function requireRoom() {
-        const userName = currentUser();
+        const name = currentUser();
         const code = roomCode();
-        if (!userName || !code) {
+        if (!name || !code) {
             window.location.replace("index.html");
             return null;
         }
         sessionStorage.setItem(ACTIVE_ROOM_KEY, code);
-        return { userName, roomCode: code };
+        return { name, code };
     }
 
-    function createId() {
-        return window.crypto?.randomUUID?.() || `cs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    }
-
-    function rupees(amount) {
-        return `₹${Number(amount || 0).toFixed(2)}`;
-    }
-
-    function totals(items) {
-        return items.reduce((result, item) => {
-            result.quantity += Number(item.quantity);
-            result.amount += Number(item.quantity) * Number(item.price);
-            return result;
-        }, { quantity: 0, amount: 0 });
-    }
-
-    function emptyState(title, description) {
+    function createEmptyState(title, description) {
         const element = document.createElement("div");
         element.className = "empty-state";
         const heading = document.createElement("h3");
@@ -107,111 +97,82 @@
         return element;
     }
 
-    function mapCart(row) {
-        return { id: row.id, name: row.name, quantity: Number(row.quantity), price: Number(row.price), addedBy: row.added_by || "" };
+    function formatRupees(amount) {
+        return `₹${Number(amount || 0).toFixed(2)}`;
     }
 
-    function mapActivity(row) {
-        return {
-            id: row.id,
-            user: row.user_name || "",
-            action: row.action,
-            item: row.item || "",
-            time: row.created_at ? new Date(row.created_at).toLocaleString() : ""
-        };
+    function calculateTotals(items) {
+        return items.reduce((result, item) => {
+            result.quantity += Number(item.quantity) || 0;
+            result.amount += (Number(item.quantity) || 0) * (Number(item.price) || 0);
+            return result;
+        }, { quantity: 0, amount: 0 });
     }
 
-    async function loadCart() {
-        const db = getClient();
-        if (!db || !roomCode()) return;
-        const { data, error } = await db.from("cart_items")
-            .select("id, room_code, name, quantity, price, added_by, created_at")
-            .eq("room_code", roomCode()).order("created_at", { ascending: true });
-        if (error) throw error;
-        state.cart = (data || []).map(mapCart);
-        renderCart();
-        renderCheckoutSummary();
-        await renderReceipt();
-    }
-
-    async function loadActivities() {
-        const db = getClient();
-        if (!db || !roomCode()) return;
-        const { data, error } = await db.from("activities")
-            .select("id, room_code, user_name, action, item, created_at")
-            .eq("room_code", roomCode()).order("created_at", { ascending: false }).limit(30);
-        if (error) throw error;
-        state.activities = (data || []).map(mapActivity);
-        renderActivityList("activityLog", "activityCount");
-        renderActivityList("roomActivityLog", "roomActivityCount");
-    }
-
-    async function loadParticipants() {
-        const db = getClient();
-        const code = roomCode();
-        if (!db || !code) return;
-        const { data, error } = await db.from("participants")
-            .select("id, room_code, name, joined_at, last_seen")
-            .eq("room_code", code).order("joined_at", { ascending: true });
-        if (error) throw error;
-        state.participants = data || [];
-        renderParticipants();
-    }
-
-    async function loadRoomData() {
-        await Promise.all([loadCart(), loadActivities(), loadParticipants()]);
-    }
-
-    async function roomExists(code) {
-        const db = getClient();
-        if (!db) return false;
-        const { data, error } = await db.from("rooms").select("room_code").eq("room_code", code).maybeSingle();
-        if (error) throw error;
-        return Boolean(data);
-    }
-
-    async function createRoom() {
-        const db = getClient();
-        if (!db) return null;
-        for (let attempt = 0; attempt < 8; attempt += 1) {
-            const random = new Uint32Array(1);
-            window.crypto.getRandomValues(random);
-            const code = `CART${String(random[0] % 1000000).padStart(6, "0")}`;
-            const { error } = await db.from("rooms").insert({ room_code: code });
-            if (!error) return code;
-            if (error.code !== "23505") throw error;
+    function getParticipantId(code = roomCode()) {
+        const key = `cartShareParticipantId_${code}`;
+        let id = sessionStorage.getItem(key);
+        if (!id) {
+            id = createId("participant");
+            sessionStorage.setItem(key, id);
         }
-        throw new Error("Could not generate an unused room code. Please try again.");
+        return id;
     }
 
-    async function addActivity(action, item, userName = currentUser(), code = roomCode()) {
-        const db = getClient();
-        if (!db || !code) return;
-        const { error } = await db.from("activities").insert({
-            id: createId(), room_code: code, user_name: userName || "", action, item: item || "", created_at: new Date().toISOString()
+    function getCart() {
+        return readRoomList("Cart");
+    }
+
+    function saveCart(cart) {
+        writeRoomList("Cart", cart);
+    }
+
+    function getActivities() {
+        return readRoomList("Activity");
+    }
+
+    function addActivity(action, item, user = currentUser(), code = roomCode()) {
+        const activities = readRoomList("Activity", code);
+        activities.unshift({
+            id: createId("activity"),
+            user,
+            action,
+            item: item || "",
+            time: new Date().toLocaleString(),
+            createdAt: new Date().toISOString()
         });
-        if (error) throw error;
+        writeRoomList("Activity", activities.slice(0, 30), code);
     }
 
-    async function registerParticipant(userName, code, recordJoin = true) {
-        const db = getClient();
-        if (!db) return;
-        const id = participantId(code);
-        const { data: existing, error: selectError } = await db.from("participants")
-            .select("id").eq("id", id).eq("room_code", code).limit(1).maybeSingle();
-        if (selectError) throw selectError;
-        const timestamp = new Date().toISOString();
+    function registerParticipant(name, code) {
+        const participants = readRoomList("Participants", code);
+        const id = getParticipantId(code);
+        const now = new Date().toISOString();
+        const existing = participants.find((participant) => participant.id === id);
         if (existing) {
-            const { error } = await db.from("participants").update({ name: userName, last_seen: timestamp })
-                .eq("id", id).eq("room_code", code);
-            if (error) throw error;
-        } else {
-            const { error } = await db.from("participants").insert({
-                id, room_code: code, name: userName, joined_at: timestamp, last_seen: timestamp
-            });
-            if (error) throw error;
-            if (recordJoin) await addActivity("joined", "room", userName, code);
+            existing.name = name;
+            existing.lastSeen = now;
+            writeRoomList("Participants", participants, code);
+            return false;
         }
+        participants.push({ id, name, joinedAt: now, lastSeen: now });
+        writeRoomList("Participants", participants.slice(-100), code);
+        return true;
+    }
+
+    function roomExists(code) {
+        return Boolean(code && localStorage.getItem(roomKey("Room", code)));
+    }
+
+    function generateRoomCode() {
+        let code;
+        do {
+            const random = new Uint32Array(1);
+            window.crypto?.getRandomValues?.(random);
+            const number = random[0] || Math.floor(Math.random() * 1000000);
+            code = `CART${String(number % 1000000).padStart(6, "0")}`;
+        } while (roomExists(code));
+        return code;
     }
 
     function showRoomSection(mode = "create") {
@@ -226,13 +187,13 @@
     function setRoomFormMode(mode) {
         const joining = mode === "join";
         const codeField = document.getElementById("roomCodeField");
-        const submit = document.getElementById("roomSubmit");
+        const submitButton = document.getElementById("roomSubmit");
         const modeField = document.getElementById("formMode");
-        if (!codeField || !submit || !modeField) return;
+        if (!codeField || !submitButton || !modeField) return;
         modeField.value = joining ? "join" : "create";
         codeField.hidden = !joining;
         document.getElementById("roomCode").required = joining;
-        submit.textContent = joining ? "Join Room" : "Create Room";
+        submitButton.textContent = joining ? "Join Room" : "Create Room";
         document.querySelectorAll("[data-form-mode]").forEach((button) => {
             const selected = button.dataset.formMode === modeField.value;
             button.classList.toggle("is-selected", selected);
@@ -240,51 +201,55 @@
         });
     }
 
-    async function handleRoomFormSubmit(event) {
+    function handleRoomFormSubmit(event) {
         event.preventDefault();
         clearError();
-        const db = getClient();
-        if (!db) return;
-        const userField = document.getElementById("userName");
+        const nameField = document.getElementById("userName");
         const codeField = document.getElementById("roomCode");
         const mode = document.getElementById("formMode").value;
-        const name = userField.value.trim();
+        const name = nameField.value.trim();
         if (!name) {
-            userField.setCustomValidity("Please enter your name.");
-            userField.reportValidity();
-            userField.setCustomValidity("");
+            nameField.setCustomValidity("Please enter your name.");
+            nameField.reportValidity();
+            nameField.setCustomValidity("");
             return;
         }
+
+        let code;
+        if (mode === "join") {
+            code = codeField.value.trim().toUpperCase();
+            if (!/^[A-Z0-9-]{1,24}$/.test(code)) {
+                codeField.setCustomValidity("Enter a valid room code.");
+                codeField.reportValidity();
+                codeField.setCustomValidity("");
+                return;
+            }
+            if (!roomExists(code)) {
+                reportError("That room code does not exist. Check the code and try again.");
+                return;
+            }
+        } else {
+            code = generateRoomCode();
+        }
+
         try {
-            let code;
-            if (mode === "join") {
-                code = codeField.value.trim().toUpperCase();
-                if (!/^[A-Z0-9-]{1,24}$/.test(code)) {
-                    codeField.setCustomValidity("Enter a valid room code.");
-                    codeField.reportValidity();
-                    codeField.setCustomValidity("");
-                    return;
-                }
-                if (!await roomExists(code)) {
-                    reportError("That room code does not exist. Check the code and try again.", "Unable to join room");
-                    return;
-                }
-            } else {
-                code = await createRoom();
+            if (mode === "create") {
+                localStorage.setItem(roomKey("Room", code), JSON.stringify({ code, createdAt: new Date().toISOString() }));
             }
             sessionStorage.setItem(USER_KEY, name);
             sessionStorage.setItem(ACTIVE_ROOM_KEY, code);
             localStorage.setItem(ROOM_KEY, code);
-            await registerParticipant(name, code, mode === "join");
-            if (mode === "create") await addActivity("created", "room", name, code);
+            const firstJoin = registerParticipant(name, code);
+            if (mode === "create") addActivity("created", "room", name, code);
+            else if (firstJoin) addActivity("joined", "room", name, code);
             window.location.href = "room.html";
         } catch (error) {
-            reportError(error, mode === "join" ? "Unable to join room" : "Unable to create room");
+            reportError(mode === "join" ? "Unable to join room." : "Unable to create room.", error);
         }
     }
 
     function activityMessage(activity) {
-        if (["added", "removed"].includes(activity.action)) return `${activity.user} ${activity.action} ${activity.item}`;
+        if (activity.action === "added" || activity.action === "removed") return `${activity.user} ${activity.action} ${activity.item}`;
         if (activity.action === "joined") return `${activity.user} joined the room`;
         if (activity.action === "placed") return `${activity.user} placed order ${activity.item}`;
         return `${activity.user} created the room`;
@@ -293,32 +258,35 @@
     function renderActivityList(containerId, countId) {
         const container = document.getElementById(containerId);
         if (!container) return;
+        const activities = getActivities();
         container.replaceChildren();
-        if (!state.activities.length) {
-            container.append(emptyState("No activity yet", "Add or remove an item to start the room log."));
+        if (!activities.length) {
+            container.append(createEmptyState("No activity yet", "Add or remove an item to start the room log."));
         } else {
-            state.activities.forEach((activity) => {
+            activities.forEach((activity) => {
                 const row = document.createElement("article");
                 row.className = "activity-item";
                 const message = document.createElement("p");
                 message.textContent = activityMessage(activity);
                 const time = document.createElement("time");
-                time.textContent = activity.time;
+                time.dateTime = activity.createdAt || "";
+                time.textContent = activity.time || "";
                 row.append(message, time);
                 container.append(row);
             });
         }
-        setText(countId, `${state.activities.length} ${state.activities.length === 1 ? "activity" : "activities"}`);
+        setText(countId, `${activities.length} ${activities.length === 1 ? "activity" : "activities"}`);
     }
 
     function renderParticipants() {
         const container = document.getElementById("participantList");
         if (!container) return;
+        const participants = readRoomList("Participants");
         container.replaceChildren();
-        if (!state.participants.length) {
-            container.append(emptyState("No participants yet", "Room members will appear here after joining."));
+        if (!participants.length) {
+            container.append(createEmptyState("No participants yet", "Room members will appear here after joining."));
         } else {
-            state.participants.forEach((participant) => {
+            participants.slice().reverse().forEach((participant) => {
                 const row = document.createElement("div");
                 row.className = "participant-row";
                 const marker = document.createElement("span");
@@ -328,24 +296,25 @@
                 name.textContent = participant.name;
                 const label = document.createElement("span");
                 label.className = "participant-label";
-                label.textContent = participant.id === participantId() ? "This session" : "Room member";
+                label.textContent = participant.id === getParticipantId() ? "This session" : "Room member";
                 row.append(marker, name, label);
                 container.append(row);
             });
         }
-        setText("participantCount", `${state.participants.length} ${state.participants.length === 1 ? "participant" : "participants"}`);
+        setText("participantCount", `${participants.length} ${participants.length === 1 ? "participant" : "participants"}`);
     }
 
     function renderCart() {
         const container = document.getElementById("cartItems");
         if (!container) return;
+        const cart = getCart();
         container.replaceChildren();
-        if (!state.cart.length) {
-            const empty = emptyState("Your cart is empty", "Add your first shopping item above.");
+        if (!cart.length) {
+            const empty = createEmptyState("Your cart is empty", "Add your first shopping item above.");
             empty.classList.add("cart-empty-state");
             container.append(empty);
         } else {
-            state.cart.forEach((item) => {
+            cart.forEach((item) => {
                 const row = document.createElement("article");
                 row.className = "cart-item";
                 const details = document.createElement("div");
@@ -353,10 +322,10 @@
                 const name = document.createElement("h3");
                 name.textContent = item.name;
                 const byline = document.createElement("p");
-                byline.textContent = `${item.quantity} × ${rupees(item.price)} · Added by ${item.addedBy}`;
-                const total = document.createElement("strong");
-                total.className = "cart-item-total";
-                total.textContent = rupees(item.quantity * item.price);
+                byline.textContent = `${item.quantity} × ${formatRupees(item.price)} · Added by ${item.addedBy}`;
+                const lineTotal = document.createElement("strong");
+                lineTotal.className = "cart-item-total";
+                lineTotal.textContent = formatRupees(item.quantity * item.price);
                 const remove = document.createElement("button");
                 remove.className = "remove-item";
                 remove.type = "button";
@@ -364,13 +333,13 @@
                 remove.setAttribute("aria-label", `Remove ${item.name}`);
                 remove.textContent = "Remove";
                 details.append(name, byline);
-                row.append(details, total, remove);
+                row.append(details, lineTotal, remove);
                 container.append(row);
             });
         }
-        const sum = totals(state.cart);
+        const sum = calculateTotals(cart);
         setText("itemCount", `${sum.quantity} ${sum.quantity === 1 ? "item" : "items"}`);
-        setText("cartTotal", rupees(sum.amount));
+        setText("cartTotal", formatRupees(sum.amount));
     }
 
     function appendOrderItem(container, item) {
@@ -380,11 +349,11 @@
         const name = document.createElement("strong");
         name.textContent = item.name;
         const quantity = document.createElement("span");
-        quantity.textContent = `${item.quantity} × ${rupees(item.price)}`;
+        quantity.textContent = `${item.quantity} × ${formatRupees(item.price)}`;
         details.append(name, quantity);
         const total = document.createElement("strong");
         total.className = "checkout-line-total";
-        total.textContent = rupees(item.quantity * item.price);
+        total.textContent = formatRupees(item.quantity * item.price);
         row.append(details, total);
         container.append(row);
     }
@@ -392,80 +361,83 @@
     function renderCheckoutSummary() {
         const container = document.getElementById("checkoutItems");
         if (!container) return;
+        const cart = getCart();
         container.replaceChildren();
-        if (!state.cart.length) container.append(emptyState("Your cart is empty", "Add items before placing an order."));
-        else state.cart.forEach((item) => appendOrderItem(container, item));
-        const sum = totals(state.cart);
+        if (!cart.length) container.append(createEmptyState("Your cart is empty", "Add items before placing an order."));
+        else cart.forEach((item) => appendOrderItem(container, item));
+        const sum = calculateTotals(cart);
         setText("checkoutRoomCode", roomCode());
         setText("checkoutItemCount", `${sum.quantity} ${sum.quantity === 1 ? "item" : "items"}`);
-        setText("checkoutTotal", rupees(sum.amount));
+        setText("checkoutTotal", formatRupees(sum.amount));
         const button = document.getElementById("placeOrderButton");
-        if (button) button.disabled = state.cart.length === 0;
+        if (button) button.disabled = cart.length === 0;
     }
 
-    async function loadOrder(id) {
-        const db = getClient();
-        const code = roomCode();
-        if (!db || !id || !code) return null;
-        const { data: order, error } = await db.from("orders")
-            .select("id, room_code, user_name, customer_name, contact_number, delivery_address, item_count, grand_total, created_at")
-            .eq("room_code", code).eq("id", id).maybeSingle();
-        if (error) throw error;
-        if (!order) return null;
-        const { data: rows, error: itemError } = await db.from("order_items")
-            .select("id, order_id, name, quantity, price").eq("order_id", order.id);
-        if (itemError) throw itemError;
-        order.items = (rows || []).map((row) => ({
-            id: row.id, name: row.name, quantity: Number(row.quantity), price: Number(row.price)
-        }));
-        return order;
+    function getOrders() {
+        return readRoomList("Orders");
     }
 
-    async function renderReceipt() {
+    function loadOrder(id) {
+        return getOrders().find((order) => order.id === id) || null;
+    }
+
+    function renderReceipt() {
         const body = document.getElementById("receiptItems");
         if (!body) return;
-        try {
-            const id = new URLSearchParams(location.search).get("orderId");
-            const order = id ? await loadOrder(id) : null;
-            const items = order ? order.items : state.cart;
-            const sum = totals(items);
-            body.replaceChildren();
-            if (!items.length) {
+        const id = new URLSearchParams(window.location.search).get("orderId");
+        const order = id ? loadOrder(id) : null;
+        const items = order ? order.items : getCart();
+        const sum = calculateTotals(items);
+        body.replaceChildren();
+        if (!items.length) {
+            const row = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 5;
+            cell.className = "receipt-empty";
+            cell.textContent = "No items in this room yet.";
+            row.append(cell);
+            body.append(row);
+        } else {
+            items.forEach((item) => {
                 const row = document.createElement("tr");
-                const cell = document.createElement("td");
-                cell.colSpan = 4;
-                cell.className = "receipt-empty";
-                cell.textContent = "No items in this room yet.";
-                row.append(cell);
-                body.append(row);
-            } else {
-                items.forEach((item) => {
-                    const row = document.createElement("tr");
-                    [item.name, String(item.quantity), rupees(item.price), rupees(item.quantity * item.price)].forEach((value) => {
-                        const cell = document.createElement("td");
-                        cell.textContent = value;
-                        row.append(cell);
-                    });
-                    body.append(row);
+                [item.name, String(item.quantity), formatRupees(item.price), item.addedBy || "", formatRupees(item.quantity * item.price)].forEach((value) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = value;
+                    row.append(cell);
                 });
-            }
-            setText("receiptItemCount", String(order?.item_count ?? sum.quantity));
-            setText("receiptTotal", rupees(order?.grand_total ?? sum.amount));
-            setText("receiptRoomCode", roomCode());
-            setText("receiptDate", order?.created_at ? new Date(order.created_at).toLocaleString() : new Date().toLocaleString());
-            setText("receiptOrderId", order?.id || "");
-            const idRow = document.getElementById("receiptOrderIdRow");
-            if (idRow) idRow.hidden = !order;
-        } catch (error) {
-            reportError(error, "Unable to load receipt");
+                body.append(row);
+            });
         }
+        setText("receiptItemCount", String(order?.itemCount ?? sum.quantity));
+        setText("receiptTotal", formatRupees(order?.grandTotal ?? sum.amount));
+        setText("receiptRoomCode", roomCode());
+        setText("receiptDate", order?.createdAt || new Date().toLocaleString());
+        setText("receiptOrderId", order?.id || "");
+        const orderIdRow = document.getElementById("receiptOrderIdRow");
+        if (orderIdRow) orderIdRow.hidden = !order;
     }
 
-    async function handleAddItem(event) {
+    function renderRoomData() {
+        const context = requireRoom();
+        if (!context) return;
+        setText("displayUser", context.name);
+        setText("displayRoom", context.code);
+        setText("cartRoomCode", context.code);
+        state.cart = getCart();
+        state.activities = getActivities();
+        state.participants = readRoomList("Participants");
+        state.orders = getOrders();
+        renderCart();
+        renderActivityList("activityLog", "activityCount");
+        renderActivityList("roomActivityLog", "roomActivityCount");
+        renderParticipants();
+        renderReceipt();
+        clearError();
+    }
+
+    function handleAddItem(event) {
         event.preventDefault();
         clearError();
-        const db = getClient();
-        if (!db) return;
         const nameField = document.getElementById("itemName");
         const quantityField = document.getElementById("itemQuantity");
         const priceField = document.getElementById("itemPrice");
@@ -477,138 +449,103 @@
             return;
         }
         try {
-            const { error } = await db.from("cart_items").insert({
-                id: createId(), room_code: roomCode(), name, quantity, price,
-                added_by: currentUser(), created_at: new Date().toISOString()
-            });
-            if (error) throw error;
-            await addActivity("added", name);
+            const cart = getCart();
+            cart.push({ id: createId("item"), name, quantity, price, addedBy: currentUser(), createdAt: new Date().toISOString() });
+            saveCart(cart);
+            addActivity("added", name);
             event.currentTarget.reset();
             quantityField.value = "1";
-            await Promise.all([loadCart(), loadActivities()]);
+            state.cart = cart;
+            state.activities = getActivities();
+            renderCart();
+            renderActivityList("activityLog", "activityCount");
         } catch (error) {
-            reportError(error, "Unable to add item");
+            reportError("Unable to add item.", error);
         }
     }
 
-    async function handleRemoveItem(id) {
-        const db = getClient();
-        if (!db) return;
-        const item = state.cart.find((entry) => entry.id === id);
+    function handleRemoveItem(id) {
+        clearError();
+        const cart = getCart();
+        const item = cart.find((entry) => String(entry.id) === String(id));
         if (!item) return;
         try {
-            const { error } = await db.from("cart_items").delete().eq("id", id).eq("room_code", roomCode());
-            if (error) throw error;
-            await addActivity("removed", item.name);
-            await Promise.all([loadCart(), loadActivities()]);
+            const remaining = cart.filter((entry) => String(entry.id) !== String(id));
+            saveCart(remaining);
+            addActivity("removed", item.name);
+            state.cart = remaining;
+            state.activities = getActivities();
+            renderCart();
+            renderActivityList("activityLog", "activityCount");
         } catch (error) {
-            reportError(error, "Unable to remove item");
+            reportError("Unable to remove item.", error);
         }
     }
 
-    async function renderRoomData() {
-        const context = requireRoom();
-        if (!context || !getClient()) return;
-        setText("displayUser", context.userName);
-        setText("displayRoom", context.roomCode);
-        setText("cartRoomCode", context.roomCode);
-        try {
-            await registerParticipant(context.userName, context.roomCode);
-            await loadRoomData();
-            clearError();
-        } catch (error) {
-            reportError(error, "Unable to load room");
-        }
-    }
-
-    async function placeOrder(event) {
+    function placeOrder(event) {
         event.preventDefault();
         clearError();
-        const db = getClient();
-        if (!db) return;
-        const cart = state.cart.map((item) => ({ ...item }));
+        const cart = getCart();
         if (!cart.length) {
-            reportError("Add at least one item to your cart before placing an order.", "Unable to place order");
+            reportError("Add at least one item to your cart before placing an order.");
             return;
         }
         const customerName = document.getElementById("customerName").value.trim();
         const contactNumber = document.getElementById("contactNumber").value.trim();
         const deliveryAddress = document.getElementById("deliveryAddress").value.trim();
         if (!customerName || !contactNumber || !deliveryAddress) return;
-        const sum = totals(cart);
-        const button = document.getElementById("placeOrderButton");
-        button.disabled = true;
         try {
-            let id = "";
-            let saved = false;
-            for (let attempt = 0; attempt < 8; attempt += 1) {
+            const orders = getOrders();
+            let id;
+            do {
                 const random = new Uint32Array(1);
-                window.crypto.getRandomValues(random);
-                id = `CS-${String(random[0] % 1000000).padStart(6, "0")}`;
-                const { error } = await db.from("orders").insert({
-                    id, room_code: roomCode(), user_name: currentUser(), customer_name: customerName,
-                    contact_number: contactNumber, delivery_address: deliveryAddress,
-                    item_count: sum.quantity, grand_total: sum.amount, created_at: new Date().toISOString()
-                });
-                if (!error) {
-                    saved = true;
-                    break;
-                }
-                if (error.code !== "23505" || attempt === 7) throw error;
-            }
-            if (!saved) throw new Error("Could not reserve a unique order ID. Please try again.");
-            const orderRows = cart.map((item) => ({
-                id: createId(), order_id: id, name: item.name, quantity: item.quantity, price: item.price
-            }));
-            const { error: itemError } = await db.from("order_items").insert(orderRows);
-            if (itemError) {
-                await db.from("orders").delete().eq("id", id).eq("room_code", roomCode());
-                throw itemError;
-            }
-            try {
-                await addActivity("placed", id);
-                sessionStorage.removeItem("cartShareOrderActivityError");
-            } catch (activityError) {
-                sessionStorage.setItem("cartShareOrderActivityError", activityError?.message || "Activity could not be saved.");
-            }
+                window.crypto?.getRandomValues?.(random);
+                id = `CS-${String((random[0] || Math.floor(Math.random() * 1000000)) % 1000000).padStart(6, "0")}`;
+            } while (orders.some((order) => order.id === id));
+            const sum = calculateTotals(cart);
+            const order = {
+                id,
+                user: currentUser(),
+                customerName,
+                contactNumber,
+                deliveryAddress,
+                roomCode: roomCode(),
+                createdAt: new Date().toLocaleString(),
+                items: cart.map((item) => ({ ...item })),
+                itemCount: sum.quantity,
+                grandTotal: sum.amount
+            };
+            orders.unshift(order);
+            writeRoomList("Orders", orders);
+            addActivity("placed", id);
             sessionStorage.setItem(LAST_ORDER_KEY, id);
-            location.href = `order-confirmation.html?orderId=${encodeURIComponent(id)}`;
+            window.location.href = `order-confirmation.html?orderId=${encodeURIComponent(id)}`;
         } catch (error) {
-            button.disabled = false;
-            reportError(error, "Unable to place order");
+            reportError("Unable to place order.", error);
         }
     }
 
-    async function renderConfirmation() {
-        const id = new URLSearchParams(location.search).get("orderId") || sessionStorage.getItem(LAST_ORDER_KEY);
+    function renderConfirmation() {
+        const id = new URLSearchParams(window.location.search).get("orderId") || sessionStorage.getItem(LAST_ORDER_KEY);
         if (!id) {
-            location.replace("cart.html");
+            window.location.replace("cart.html");
             return;
         }
-        try {
-            const order = await loadOrder(id);
-            if (!order) {
-                reportError("This order could not be found in the current room.", "Unable to load order");
-                return;
-            }
-            sessionStorage.setItem(LAST_ORDER_KEY, id);
-            setText("confirmationOrderId", order.id);
-            setText("confirmationCustomer", order.customer_name);
-            setText("confirmationRoom", order.room_code);
-            setText("confirmationDate", order.created_at ? new Date(order.created_at).toLocaleString() : "");
-            setText("confirmationTotal", rupees(order.grand_total));
-            const container = document.getElementById("confirmationItems");
-            container.replaceChildren();
-            order.items.forEach((item) => appendOrderItem(container, item));
-            document.getElementById("viewOrderReceipt").href = `room.html?orderId=${encodeURIComponent(id)}`;
-            const activityError = sessionStorage.getItem("cartShareOrderActivityError");
-            if (activityError) {
-                sessionStorage.removeItem("cartShareOrderActivityError");
-                reportError(activityError, "Order placed, but activity logging failed");
-            }
-        } catch (error) {
-            reportError(error, "Unable to load order");
+        const order = loadOrder(id);
+        if (!order || order.roomCode !== roomCode()) {
+            reportError("This order could not be found in the current room.");
+            return;
         }
+        sessionStorage.setItem(LAST_ORDER_KEY, id);
+        setText("confirmationOrderId", order.id);
+        setText("confirmationCustomer", order.customerName);
+        setText("confirmationRoom", order.roomCode);
+        setText("confirmationDate", order.createdAt);
+        setText("confirmationTotal", formatRupees(order.grandTotal));
+        const container = document.getElementById("confirmationItems");
+        container.replaceChildren();
+        order.items.forEach((item) => appendOrderItem(container, item));
+        document.getElementById("viewOrderReceipt").href = `room.html?orderId=${encodeURIComponent(id)}`;
     }
 
     function showRoomPanel(panelId) {
@@ -625,11 +562,11 @@
         document.getElementById("roomForm")?.addEventListener("submit", handleRoomFormSubmit);
     }
 
-    async function initializeRoomPage() {
+    function initializeRoomPage() {
         if (!requireRoom()) return;
-        subscribeToRoom();
-        await renderRoomData();
-        if (new URLSearchParams(location.search).has("orderId")) showRoomPanel("receiptPanel");
+        registerParticipant(currentUser(), roomCode());
+        renderRoomData();
+        if (new URLSearchParams(window.location.search).has("orderId")) showRoomPanel("receiptPanel");
         document.querySelectorAll("[data-panel-target]").forEach((button) => button.addEventListener("click", () => showRoomPanel(button.dataset.panelTarget)));
         document.querySelectorAll("[data-close-panel]").forEach((button) => button.addEventListener("click", () => {
             document.querySelectorAll("[data-room-panel]").forEach((panel) => { panel.hidden = true; });
@@ -637,10 +574,9 @@
         document.getElementById("printReceipt")?.addEventListener("click", () => window.print());
     }
 
-    async function initializeCartPage() {
+    function initializeCartPage() {
         if (!requireRoom()) return;
-        await renderRoomData();
-        subscribeToRoom();
+        renderRoomData();
         document.getElementById("addItemForm")?.addEventListener("submit", handleAddItem);
         document.getElementById("cartItems")?.addEventListener("click", (event) => {
             const button = event.target.closest("[data-remove-item]");
@@ -648,89 +584,50 @@
         });
     }
 
-    async function initializeCheckoutPage() {
+    function initializeCheckoutPage() {
         if (!requireRoom()) return;
-        const db = getClient();
-        if (!db) return;
-        try {
-            const { data, error } = await db.from("cart_items")
-                .select("id, room_code, name, quantity, price, added_by, created_at")
-                .eq("room_code", roomCode()).order("created_at", { ascending: true });
-            if (error) throw error;
-            state.cart = (data || []).map(mapCart);
-            document.getElementById("customerName").value = currentUser();
-            renderCheckoutSummary();
-            document.getElementById("checkoutForm")?.addEventListener("submit", placeOrder);
-            subscribeToRoom();
-        } catch (error) {
-            reportError(error, "Unable to load checkout");
-        }
+        state.cart = getCart();
+        renderCheckoutSummary();
+        document.getElementById("customerName").value = currentUser();
+        document.getElementById("checkoutForm")?.addEventListener("submit", placeOrder);
     }
 
-    async function initializeConfirmationPage() {
+    function initializeConfirmationPage() {
         if (!requireRoom()) return;
-        await renderConfirmation();
-        subscribeToRoom();
+        renderConfirmation();
     }
 
-    async function refreshOrder(id) {
-        try {
-            let order = null;
-            for (let attempt = 0; attempt < 5; attempt += 1) {
-                order = await loadOrder(id);
-                if (!order || order.items.length) break;
-                await new Promise((resolve) => window.setTimeout(resolve, 250));
-            }
-            if (!order) return;
-            if (document.getElementById("confirmationItems") && new URLSearchParams(location.search).get("orderId") === id) await renderConfirmation();
-            if (document.getElementById("receiptItems")) await renderReceipt();
-        } catch (error) {
-            reportError(error, "Realtime order refresh failed");
-        }
-    }
-
-    function subscribeToRoom() {
-        const db = getClient();
+    function refreshRoomFromStorage(event) {
         const code = roomCode();
-        if (!db || !code || state.channel) return;
-        const channel = db.channel(`cartshare-room-${code}-${participantId()}`);
-        channel.on("postgres_changes", { event: "*", schema: "public", table: "cart_items", filter: `room_code=eq.${code}` }, () => {
-            loadCart().catch((error) => reportError(error, "Realtime cart refresh failed"));
-        });
-        channel.on("postgres_changes", { event: "DELETE", schema: "public", table: "cart_items" }, () => {
-            loadCart().catch((error) => reportError(error, "Realtime cart refresh failed"));
-        });
-        channel.on("postgres_changes", { event: "*", schema: "public", table: "participants", filter: `room_code=eq.${code}` }, () => {
-            loadParticipants().catch((error) => reportError(error, "Realtime participant refresh failed"));
-        });
-        channel.on("postgres_changes", { event: "*", schema: "public", table: "activities", filter: `room_code=eq.${code}` }, () => {
-            loadActivities().catch((error) => reportError(error, "Realtime activity refresh failed"));
-        });
-        channel.on("postgres_changes", { event: "*", schema: "public", table: "orders", filter: `room_code=eq.${code}` }, (payload) => {
-            const id = payload.new?.id || payload.old?.id;
-            if (id) window.setTimeout(() => refreshOrder(id), 350);
-        });
-        state.channel = channel;
-        channel.subscribe((status) => {
-            if (status === "SUBSCRIBED") {
-                loadParticipants().catch((error) => reportError(error, "Unable to refresh room participants"));
-            } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-                reportError("Realtime subscription could not connect. Reload to retry.", "Live updates unavailable");
-            }
-        });
+        if (!code || !event.key || !event.key.endsWith(`_${code}`)) return;
+        if (event.key === roomKey("Cart", code)) {
+            state.cart = getCart();
+            renderCart();
+            renderCheckoutSummary();
+            renderReceipt();
+        } else if (event.key === roomKey("Activity", code)) {
+            state.activities = getActivities();
+            renderActivityList("activityLog", "activityCount");
+            renderActivityList("roomActivityLog", "roomActivityCount");
+        } else if (event.key === roomKey("Participants", code)) {
+            state.participants = readRoomList("Participants", code);
+            renderParticipants();
+        } else if (event.key === roomKey("Orders", code)) {
+            state.orders = getOrders();
+            renderConfirmation();
+            renderReceipt();
+        }
     }
 
-    async function initializePage() {
-        if (!getClient()) return;
+    function initializePage() {
         const page = document.body.dataset.page;
         if (page === "landing") initializeLandingPage();
-        else if (page === "room") await initializeRoomPage();
-        else if (page === "cart") await initializeCartPage();
-        else if (page === "checkout") await initializeCheckoutPage();
-        else if (page === "confirmation") await initializeConfirmationPage();
+        else if (page === "room") initializeRoomPage();
+        else if (page === "cart") initializeCartPage();
+        else if (page === "checkout") initializeCheckoutPage();
+        else if (page === "confirmation") initializeConfirmationPage();
+        window.addEventListener("storage", refreshRoomFromStorage);
     }
 
-    document.addEventListener("DOMContentLoaded", () => {
-        initializePage().catch((error) => reportError(error, "Application startup failed"));
-    });
+    document.addEventListener("DOMContentLoaded", initializePage);
 })();
